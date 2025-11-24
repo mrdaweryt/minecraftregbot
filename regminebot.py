@@ -148,7 +148,7 @@ async def handle_webhook(request):
     
     update_json = await request.json()
     update = Update.model_validate(update_json) 
-    await dp.feed_update(update) # <-- ИСПРАВЛЕНИЕ: УДАЛЕН АРГУМЕНТ bot=app['bot']
+    await dp.feed_update(update) # <--- Аргумент bot удален
     
     return web.Response()
 
