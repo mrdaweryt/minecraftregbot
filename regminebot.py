@@ -9,7 +9,6 @@ from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
 
-# Установим уровень логирования
 logging.basicConfig(level=logging.INFO)
 
 # --- 1. НАСТРОЙКИ ---
@@ -27,77 +26,65 @@ WEBHOOK_PATH = '/'
 WEBAPP_HOST = '0.0.0.0'
 WEBAPP_PORT = int(os.getenv("PORT", 8080))
 
-# --- 2. ИНИЦИАЛИЗАЦИЯ ДИСПЕТЧЕРА ---
+# --- 2. ИНИЦИАЛИЗАЦИЯ ---
 storage = MemoryStorage() 
 dp = Dispatcher(storage=storage)
 
-# --- 3. FSM (Finite State Machine) - Состояния для анкеты ---
+# --- 3. FSM ---
 class ApplicationStates(StatesGroup):
     waiting_for_minecraft_nick = State()
     waiting_for_discord_nick = State()
     waiting_for_source = State()
     waiting_for_activity = State()
 
-# --- 4. ОБРАБОТЧИКИ КОМАНД И СООБЩЕНИЙ ---
+# --- 4. ОБРАБОТЧИКИ ---
 
 @dp.message(Command("start")) 
 async def send_welcome(message: types.Message):
-    """Обработка команды /start"""
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="📝 Подать заявку", callback_data="start_application")]
     ])
-    
-    await message.answer(
-        "Добро пожаловать в систему подачи заявок! Нажмите кнопку, чтобы начать.",
-        reply_markup=keyboard
-    )
+    await message.answer("Добро пожаловать! Нажмите кнопку, чтобы начать.", reply_markup=keyboard)
 
 @dp.callback_query(F.data == "start_application")
 async def start_application(call: types.CallbackQuery, state: FSMContext):
-    """Запуск процесса анкетирования"""
     await call.message.edit_text("Отлично! **Ваш никнейм в Minecraft?**")
     await state.set_state(ApplicationStates.waiting_for_minecraft_nick)
     await call.answer()
 
 @dp.message(ApplicationStates.waiting_for_minecraft_nick, F.text)
 async def process_mc_nick(message: types.Message, state: FSMContext):
-    """Шаг 1: Получаем ник в Minecraft"""
     await state.update_data(mc_nick=message.text)
     await message.answer("Хорошо. **Ваш никнейм в Discord (включая тег)?**")
     await state.set_state(ApplicationStates.waiting_for_discord_nick)
 
 @dp.message(ApplicationStates.waiting_for_discord_nick, F.text)
 async def process_discord_nick(message: types.Message, state: FSMContext):
-    """Шаг 2: Получаем ник в Discord"""
     await state.update_data(discord_nick=message.text)
     await message.answer("Почти готово. **Где Вы узнали о нашем сервере?**")
     await state.set_state(ApplicationStates.waiting_for_source)
 
 @dp.message(ApplicationStates.waiting_for_source, F.text)
 async def process_source(message: types.Message, state: FSMContext):
-    """Шаг 3: Получаем источник"""
     await state.update_data(source=message.text)
     await message.answer("Последний вопрос: **Чем планируете заниматься на сервере?**")
     await state.set_state(ApplicationStates.waiting_for_activity)
 
 @dp.message(ApplicationStates.waiting_for_activity, F.text)
 async def process_activity(message: types.Message, state: FSMContext):
-    """Шаг 4: Получаем планы и отправляем заявку"""
     await state.update_data(activity=message.text)
     data = await state.get_data()
     
-    await message.answer("Спасибо! Ваша заявка принята и отправлена на рассмотрение. Мы сообщим Вам о решении.")
+    await message.answer("Спасибо! Ваша заявка принята и отправлена на рассмотрение.")
     await state.clear()
     
-    # --- ФОРМИРОВАНИЕ И ОТПРАВКА ЗАЯВКИ АДМИНАМ ---
     application_text = (
-        "🔥 **НОВАЯ ЗАЯВКА НА СЕРВЕР** 🔥\n\n"
-        f"**От Пользователя:** @{message.from_user.username or message.from_user.id}\n"
-        f"**ID Telegram:** `{message.from_user.id}`\n\n"
-        f"**MC Ник:** `{data['mc_nick']}`\n"
-        f"**Discord Ник:** `{data['discord_nick']}`\n"
-        f"**Источник:** {data['source']}\n"
-        f"**Планы на сервере:** {data['activity']}\n"
+        "🔥 **НОВАЯ ЗАЯВКА** 🔥\n\n"
+        f"**User:** @{message.from_user.username or message.from_user.id}\n"
+        f"**MC:** `{data['mc_nick']}`\n"
+        f"**DC:** `{data['discord_nick']}`\n"
+        f"**Info:** {data['source']}\n"
+        f"**Plan:** {data['activity']}\n"
     )
 
     admin_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -106,74 +93,61 @@ async def process_activity(message: types.Message, state: FSMContext):
     ])
     
     if ADMIN_CHAT_ID:
-        await message.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=application_text,
-            reply_markup=admin_keyboard,
-            parse_mode='Markdown'
-        )
+        await message.bot.send_message(chat_id=ADMIN_CHAT_ID, text=application_text, reply_markup=admin_keyboard, parse_mode='Markdown')
 
 @dp.callback_query(lambda c: c.data and (c.data.startswith('approve_') or c.data.startswith('reject_')))
 async def process_admin_decision(call: types.CallbackQuery):
     action, user_id = call.data.split('_')
     
     if action == 'approve':
-        await call.bot.send_message(user_id, "🥳 **Поздравляем! Ваша заявка одобрена!** Теперь вам доступно меню сервера. /start")
-        await call.answer("Заявка одобрена.", show_alert=True)
+        await call.bot.send_message(user_id, "🥳 **Ваша заявка одобрена!** /start")
+        await call.answer("Одобрено", show_alert=True)
     elif action == 'reject':
-        await call.bot.send_message(user_id, "😔 **К сожалению, Ваша заявка отклонена.** Вы можете попробовать позже.")
-        await call.answer("Заявка отклонена.", show_alert=True)
+        await call.bot.send_message(user_id, "😔 **Заявка отклонена.**")
+        await call.answer("Отклонено", show_alert=True)
 
     await call.message.edit_text(
-        call.message.text + f"\n\n**СТАТУС:** {'✅ Одобрено' if action == 'approve' else '❌ Отклонено'} (Модератор: {call.from_user.full_name})", 
-        reply_markup=None, 
-        parse_mode='Markdown'
+        call.message.text + f"\n\n**СТАТУС:** {'✅' if action == 'approve' else '❌'} (Модератор: {call.from_user.full_name})", 
+        reply_markup=None, parse_mode='Markdown'
     )
 
-# --- 5. ЗАПУСК БОТА (Webhooks) ---
+# --- 5. ЗАПУСК ---
 
 async def on_startup(bot: Bot):
-    """Устанавливаем Webhook при запуске"""
     if WEBHOOK_HOST:
         await bot.set_webhook(f"{WEBHOOK_HOST}{WEBHOOK_PATH}")
         logging.info(f"Webhook установлен: {WEBHOOK_HOST}{WEBHOOK_PATH}")
 
 async def on_shutdown(bot: Bot):
-    """Снимаем Webhook при отключении"""
     await bot.delete_webhook()
+    await bot.session.close()
     logging.info("Webhook удален.")
 
 async def handle_webhook(request):
-    """Обработка входящих Webhook-запросов от Telegram"""
-    
     update_json = await request.json()
     update = Update.model_validate(update_json) 
-    # ВОТ ИСПРАВЛЕННАЯ СТРОКА: передаем и bot, и update явно по именам
     await dp.feed_update(bot=app['bot'], update=update)
-    
     return web.Response()
 
+# --- НОВАЯ ФУНКЦИЯ HEALTH CHECK ---
+async def health_check(request):
+    return web.Response(text="Bot is alive!", status=200)
 
 if __name__ == '__main__':
     if not all([BOT_TOKEN, ADMIN_CHAT_ID_RAW, WEBHOOK_HOST]):
-        logging.error("ОШИБКА: Не все переменные окружения установлены! BOT_TOKEN, ADMIN_CHAT_ID и WEBHOOK_URL обязательны.")
+        logging.error("ОШИБКА: Проверьте переменные окружения!")
     else:
-        bot = Bot(
-            token=BOT_TOKEN, 
-            default=DefaultBotProperties(parse_mode='HTML')
-        )
-        
+        bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
         app = web.Application()
         app['bot'] = bot
 
-        app.router.add_post(WEBHOOK_PATH, handle_webhook)
+        # Регистрируем маршруты
+        app.router.add_post(WEBHOOK_PATH, handle_webhook) # Для Telegram
+        app.router.add_get('/', health_check)             # Для Render Health Check (ГЛАВНОЕ ИСПРАВЛЕНИЕ)
+        app.router.add_get('/health', health_check)       # Доп. проверка
 
         app.on_startup.append(lambda app: on_startup(app['bot']))
         app.on_shutdown.append(lambda app: on_shutdown(app['bot']))
 
         logging.info("Starting AIOHTTP web application...")
-        web.run_app(
-            app,
-            host=WEBAPP_HOST,
-            port=WEBAPP_PORT
-        )
+        web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
