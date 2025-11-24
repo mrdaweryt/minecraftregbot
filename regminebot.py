@@ -5,7 +5,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Update
-from aiogram.filters import Command  # <-- НОВЫЙ ИМПОРТ ДЛЯ ОБРАБОТКИ /start
+from aiogram.filters import Command
+from aiogram.client.default import DefaultBotProperties # <-- НОВЫЙ ИМПОРТ ДЛЯ parse_mode
 from aiohttp import web
 
 # Установим уровень логирования
@@ -26,7 +27,7 @@ WEBHOOK_PATH = '/'
 WEBAPP_HOST = '0.0.0.0'
 WEBAPP_PORT = int(os.getenv("PORT", 8080))
 
-# --- 2. ИНИЦИАЛИЗАЦИЯ ---
+# --- 2. ИНИЦИАЛИЗАЦИЯ ДИСПЕТЧЕРА ---
 storage = MemoryStorage() 
 dp = Dispatcher(storage=storage)
 
@@ -39,7 +40,6 @@ class ApplicationStates(StatesGroup):
 
 # --- 4. ОБРАБОТЧИКИ КОМАНД И СООБЩЕНИЙ ---
 
-# ИСПРАВЛЕННЫЙ СИНТАКСИС: Используем Command("start") вместо commands=['start']
 @dp.message(Command("start")) 
 async def send_welcome(message: types.Message):
     """Обработка команды /start"""
@@ -59,7 +59,6 @@ async def start_application(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(ApplicationStates.waiting_for_minecraft_nick)
     await call.answer()
 
-# ИСПРАВЛЕННЫЙ СИНТАКСИС: FSM-обработчик
 @dp.message(ApplicationStates.waiting_for_minecraft_nick, F.text)
 async def process_mc_nick(message: types.Message, state: FSMContext):
     """Шаг 1: Получаем ник в Minecraft"""
@@ -67,7 +66,6 @@ async def process_mc_nick(message: types.Message, state: FSMContext):
     await message.answer("Хорошо. **Ваш никнейм в Discord (включая тег)?**")
     await state.set_state(ApplicationStates.waiting_for_discord_nick)
 
-# ИСПРАВЛЕННЫЙ СИНТАКСИС: FSM-обработчик
 @dp.message(ApplicationStates.waiting_for_discord_nick, F.text)
 async def process_discord_nick(message: types.Message, state: FSMContext):
     """Шаг 2: Получаем ник в Discord"""
@@ -75,7 +73,6 @@ async def process_discord_nick(message: types.Message, state: FSMContext):
     await message.answer("Почти готово. **Где Вы узнали о нашем сервере?**")
     await state.set_state(ApplicationStates.waiting_for_source)
 
-# ИСПРАВЛЕННЫЙ СИНТАКСИС: FSM-обработчик
 @dp.message(ApplicationStates.waiting_for_source, F.text)
 async def process_source(message: types.Message, state: FSMContext):
     """Шаг 3: Получаем источник"""
@@ -83,7 +80,6 @@ async def process_source(message: types.Message, state: FSMContext):
     await message.answer("Последний вопрос: **Чем планируете заниматься на сервере?**")
     await state.set_state(ApplicationStates.waiting_for_activity)
 
-# ИСПРАВЛЕННЫЙ СИНТАКСИС: FSM-обработчик
 @dp.message(ApplicationStates.waiting_for_activity, F.text)
 async def process_activity(message: types.Message, state: FSMContext):
     """Шаг 4: Получаем планы и отправляем заявку"""
@@ -150,13 +146,9 @@ async def on_shutdown(bot: Bot):
 async def handle_webhook(request):
     """Обработка входящих Webhook-запросов от Telegram"""
     
-    if request.match_info.get('token') != BOT_TOKEN:
-        # Эта проверка нужна в более сложном коде, но пока оставим
-        pass 
-        
     update_json = await request.json()
     update = Update.model_validate(update_json) 
-    await dp.feed_update(update, bot=app['bot']) # <-- передаем бот в feed_update
+    await dp.feed_update(update, bot=app['bot'])
     
     return web.Response()
 
@@ -165,22 +157,20 @@ if __name__ == '__main__':
     if not all([BOT_TOKEN, ADMIN_CHAT_ID_RAW, WEBHOOK_HOST]):
         logging.error("ОШИБКА: Не все переменные окружения установлены! BOT_TOKEN, ADMIN_CHAT_ID и WEBHOOK_URL обязательны.")
     else:
-        bot = Bot(token=BOT_TOKEN, parse_mode='HTML') 
+        # ИСПРАВЛЕНО: Используем DefaultBotProperties для parse_mode
+        bot = Bot(
+            token=BOT_TOKEN, 
+            default=DefaultBotProperties(parse_mode='HTML')
+        )
         
-        # 1. Создаем AIOHTTP приложение
         app = web.Application()
-        
-        # 2. Добавляем объект бота в приложение, чтобы он был доступен в handle_webhook
         app['bot'] = bot
 
-        # 3. Регистрируем обработчик для Webhook URL
         app.router.add_post(WEBHOOK_PATH, handle_webhook)
 
-        # 4. Регистрируем функции запуска/остановки
         app.on_startup.append(lambda app: on_startup(app['bot']))
         app.on_shutdown.append(lambda app: on_shutdown(app['bot']))
 
-        # 5. Запускаем Web-сервер AIOHTTP
         logging.info("Starting AIOHTTP web application...")
         web.run_app(
             app,
