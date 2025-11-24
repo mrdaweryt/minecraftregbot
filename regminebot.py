@@ -1,87 +1,95 @@
 import os
-from aiogram import Bot, Dispatcher, types
+import logging
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.utils.executor import start_webhook
+from aiogram.types import Update
+from aiohttp import web
+
+# Установим уровень логирования
+logging.basicConfig(level=logging.INFO)
 
 # --- 1. НАСТРОЙКИ ---
-# Получаем переменные окружения, которые вы настроили на Render
+# Получаем переменные окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+ADMIN_CHAT_ID_RAW = os.getenv("ADMIN_CHAT_ID")
 WEBHOOK_HOST = os.getenv("WEBHOOK_URL")
 
-# Настройки Webhook (стандартные для Render)
+# Преобразуем ID админ-чата в целое число
+try:
+    ADMIN_CHAT_ID = int(ADMIN_CHAT_ID_RAW)
+except (TypeError, ValueError):
+    ADMIN_CHAT_ID = None
+    logging.error("ADMIN_CHAT_ID is missing or invalid.")
+
+# Настройки Webhook
 WEBHOOK_PATH = '/'
 WEBAPP_HOST = '0.0.0.0'
-WEBAPP_PORT = os.getenv("PORT", 8080) # Render использует переменную PORT
+WEBAPP_PORT = int(os.getenv("PORT", 8080))
 
 # --- 2. ИНИЦИАЛИЗАЦИЯ ---
-bot = Bot(token=BOT_TOKEN)
-# MemoryStorage нужен для хранения состояний FSM
+# Диспетчер теперь инициализируется без бота, так как он передается позже
 storage = MemoryStorage() 
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher(storage=storage)
 
 # --- 3. FSM (Finite State Machine) - Состояния для анкеты ---
-# Определяем шаги/состояния, через которые пройдет пользователь
 class ApplicationStates(StatesGroup):
     waiting_for_minecraft_nick = State()
     waiting_for_discord_nick = State()
     waiting_for_source = State()
     waiting_for_activity = State()
-    
+
 # --- 4. ОБРАБОТЧИКИ КОМАНД И СООБЩЕНИЙ ---
 
-@dp.message_handler(commands=['start'], state='*')
+@dp.message(F.text, commands=['start'])
 async def send_welcome(message: types.Message):
     """Обработка команды /start"""
-    # ⚠️ Здесь нужно добавить проверку статуса заявки (ОДОБРЕНА/В РАССМОТРЕНИИ)
-    # Сейчас бот просто предложит подать заявку
-    
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton(text="📝 Подать заявку", callback_data="start_application"))
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="📝 Подать заявку", callback_data="start_application")]
+    ])
     
     await message.answer(
         "Добро пожаловать в систему подачи заявок! Нажмите кнопку, чтобы начать.",
         reply_markup=keyboard
     )
 
-@dp.callback_query_handler(text="start_application", state='*')
-async def start_application(call: types.CallbackQuery):
+@dp.callback_query(F.data == "start_application")
+async def start_application(call: types.CallbackQuery, state: FSMContext):
     """Запуск процесса анкетирования"""
     await call.message.edit_text("Отлично! **Ваш никнейм в Minecraft?**")
-    await ApplicationStates.waiting_for_minecraft_nick.set()
+    await state.set_state(ApplicationStates.waiting_for_minecraft_nick)
     await call.answer()
 
-@dp.message_handler(state=ApplicationStates.waiting_for_minecraft_nick)
+@dp.message(ApplicationStates.waiting_for_minecraft_nick)
 async def process_mc_nick(message: types.Message, state: FSMContext):
     """Шаг 1: Получаем ник в Minecraft"""
-    await state.update(mc_nick=message.text)
+    await state.update_data(mc_nick=message.text)
     await message.answer("Хорошо. **Ваш никнейм в Discord (включая тег)?**")
-    await ApplicationStates.waiting_for_discord_nick.set()
+    await state.set_state(ApplicationStates.waiting_for_discord_nick)
 
-@dp.message_handler(state=ApplicationStates.waiting_for_discord_nick)
+@dp.message(ApplicationStates.waiting_for_discord_nick)
 async def process_discord_nick(message: types.Message, state: FSMContext):
     """Шаг 2: Получаем ник в Discord"""
-    await state.update(discord_nick=message.text)
+    await state.update_data(discord_nick=message.text)
     await message.answer("Почти готово. **Где Вы узнали о нашем сервере?**")
-    await ApplicationStates.waiting_for_source.set()
+    await state.set_state(ApplicationStates.waiting_for_source)
 
-@dp.message_handler(state=ApplicationStates.waiting_for_source)
+@dp.message(ApplicationStates.waiting_for_source)
 async def process_source(message: types.Message, state: FSMContext):
     """Шаг 3: Получаем источник"""
-    await state.update(source=message.text)
+    await state.update_data(source=message.text)
     await message.answer("Последний вопрос: **Чем планируете заниматься на сервере?**")
-    await ApplicationStates.waiting_for_activity.set()
+    await state.set_state(ApplicationStates.waiting_for_activity)
 
-@dp.message_handler(state=ApplicationStates.waiting_for_activity)
+@dp.message(ApplicationStates.waiting_for_activity)
 async def process_activity(message: types.Message, state: FSMContext):
     """Шаг 4: Получаем планы и отправляем заявку"""
-    await state.update(activity=message.text)
+    await state.update_data(activity=message.text)
     data = await state.get_data()
     
     await message.answer("Спасибо! Ваша заявка принята и отправлена на рассмотрение. Мы сообщим Вам о решении.")
-    await state.finish()
+    await state.clear() # Используем clear() вместо finish() в aiogram 3.x
     
     # --- ФОРМИРОВАНИЕ И ОТПРАВКА ЗАЯВКИ АДМИНАМ ---
     application_text = (
@@ -95,60 +103,88 @@ async def process_activity(message: types.Message, state: FSMContext):
     )
 
     # Кнопки для модерации
-    admin_keyboard = types.InlineKeyboardMarkup()
-    admin_keyboard.add(
-        types.InlineKeyboardButton("✅ ОДОБРИТЬ", callback_data=f"approve_{message.from_user.id}"),
-        types.InlineKeyboardButton("❌ ОТКЛОНИТЬ", callback_data=f"reject_{message.from_user.id}")
-    )
+    admin_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton("✅ ОДОБРИТЬ", callback_data=f"approve_{message.from_user.id}"),
+         types.InlineKeyboardButton("❌ ОТКЛОНИТЬ", callback_data=f"reject_{message.from_user.id}")]
+    ])
     
     if ADMIN_CHAT_ID:
-        await bot.send_message(
+        await message.bot.send_message( # Используем message.bot
             chat_id=ADMIN_CHAT_ID,
             text=application_text,
             reply_markup=admin_keyboard,
             parse_mode='Markdown'
         )
-        
+
 # Обработка нажатий кнопок модерации (для администраторов)
-@dp.callback_query_handler(lambda c: c.data.startswith('approve_') or c.data.startswith('reject_'))
+@dp.callback_query(lambda c: c.data and (c.data.startswith('approve_') or c.data.startswith('reject_')))
 async def process_admin_decision(call: types.CallbackQuery):
     action, user_id = call.data.split('_')
     
-    # ⚠️ В реальном проекте здесь должна быть проверка, что нажал АДМИН
-    # и обращение к базе данных для изменения статуса заявки
-    
+    # Отправляем сообщение пользователю
     if action == 'approve':
-        await bot.send_message(user_id, "🥳 **Поздравляем! Ваша заявка одобрена!** Теперь вам доступно меню сервера. /start")
+        await call.bot.send_message(user_id, "🥳 **Поздравляем! Ваша заявка одобрена!** Теперь вам доступно меню сервера. /start")
         await call.answer("Заявка одобрена.", show_alert=True)
     elif action == 'reject':
-        await bot.send_message(user_id, "😔 **К сожалению, Ваша заявка отклонена.** Вы можете попробовать позже.")
+        await call.bot.send_message(user_id, "😔 **К сожалению, Ваша заявка отклонена.** Вы можете попробовать позже.")
         await call.answer("Заявка отклонена.", show_alert=True)
 
     # Редактируем сообщение в админ-чате, чтобы показать, что оно обработано
-    await call.message.edit_text(call.message.text + f"\n\n**СТАТУС:** {'✅ Одобрено' if action == 'approve' else '❌ Отклонено'} (Модератор: {call.from_user.full_name})", 
-                                 reply_markup=None, parse_mode='Markdown')
+    await call.message.edit_text(
+        call.message.text + f"\n\n**СТАТУС:** {'✅ Одобрено' if action == 'approve' else '❌ Отклонено'} (Модератор: {call.from_user.full_name})", 
+        reply_markup=None, 
+        parse_mode='Markdown'
+    )
 
 # --- 5. ЗАПУСК БОТА (Webhooks) ---
-async def on_startup(dp):
-    """Устанавливаем Webhook при запуске"""
-    await bot.set_webhook(WEBHOOK_HOST + WEBHOOK_PATH)
-    print(f"Webhook установлен: {WEBHOOK_HOST + WEBHOOK_PATH}")
 
-async def on_shutdown(dp):
+async def on_startup(bot: Bot):
+    """Устанавливаем Webhook при запуске"""
+    if WEBHOOK_HOST:
+        await bot.set_webhook(f"{WEBHOOK_HOST}{WEBHOOK_PATH}")
+        logging.info(f"Webhook установлен: {WEBHOOK_HOST}{WEBHOOK_PATH}")
+
+async def on_shutdown(bot: Bot):
     """Снимаем Webhook при отключении"""
-    # logгирование
     await bot.delete_webhook()
+    logging.info("Webhook удален.")
+
+async def handle_webhook(request):
+    """Обработка входящих Webhook-запросов от Telegram"""
+    
+    # 1. Получаем тело запроса
+    update_json = await request.json()
+    
+    # 2. Создаем объект Update и передаем его Диспетчеру
+    update = Update.model_validate(update_json) 
+    await dp.feed_update(update) 
+    
+    # 3. Всегда возвращаем HTTP 200 OK
+    return web.Response()
+
 
 if __name__ == '__main__':
-    if not all([BOT_TOKEN, ADMIN_CHAT_ID, WEBHOOK_HOST]):
-        print("ОШИБКА: Не все переменные окружения установлены! BOT_TOKEN, ADMIN_CHAT_ID и WEBHOOK_URL обязательны.")
+    if not all([BOT_TOKEN, ADMIN_CHAT_ID_RAW, WEBHOOK_HOST]):
+        logging.error("ОШИБКА: Не все переменные окружения установлены! BOT_TOKEN, ADMIN_CHAT_ID и WEBHOOK_URL обязательны.")
     else:
-        # Запуск через Webhook (идеально для Render)
-        start_webhook(
-            dispatcher=dp,
-            webhook_path=WEBHOOK_PATH,
-            on_startup=on_startup,
-            on_shutdown=on_shutdown,
+        # Инициализация бота здесь, чтобы он был доступен для AIOHTTP
+        bot = Bot(token=BOT_TOKEN, parse_mode='HTML') 
+        dp.start_polling = lambda *args, **kwargs: logging.warning("Polling is not used with webhooks.")
+
+        # 1. Создаем AIOHTTP приложение
+        app = web.Application()
+        
+        # 2. Регистрируем обработчик для Webhook URL
+        app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+        # 3. Регистрируем функции запуска/остановки
+        app.on_startup.append(lambda app: on_startup(bot))
+        app.on_shutdown.append(lambda app: on_shutdown(bot))
+
+        # 4. Запускаем Web-сервер AIOHTTP
+        logging.info("Starting AIOHTTP web application...")
+        web.run_app(
+            app,
             host=WEBAPP_HOST,
-            port=WEBAPP_PORT,
+            port=WEBAPP_PORT
         )
