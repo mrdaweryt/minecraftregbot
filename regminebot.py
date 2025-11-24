@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Update
 from aiogram.filters import Command
-from aiogram.client.default import DefaultBotProperties # <-- НОВЫЙ ИМПОРТ ДЛЯ parse_mode
+from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
 
 # Установим уровень логирования
@@ -148,7 +148,7 @@ async def handle_webhook(request):
     
     update_json = await request.json()
     update = Update.model_validate(update_json) 
-    await dp.feed_update(update, bot=app['bot'])
+    await dp.feed_update(update) # <-- ИСПРАВЛЕНИЕ: УДАЛЕН АРГУМЕНТ bot=app['bot']
     
     return web.Response()
 
@@ -157,7 +157,6 @@ if __name__ == '__main__':
     if not all([BOT_TOKEN, ADMIN_CHAT_ID_RAW, WEBHOOK_HOST]):
         logging.error("ОШИБКА: Не все переменные окружения установлены! BOT_TOKEN, ADMIN_CHAT_ID и WEBHOOK_URL обязательны.")
     else:
-        # ИСПРАВЛЕНО: Используем DefaultBotProperties для parse_mode
         bot = Bot(
             token=BOT_TOKEN, 
             default=DefaultBotProperties(parse_mode='HTML')
