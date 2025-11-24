@@ -5,31 +5,28 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Update
+from aiogram.filters import Command  # <-- НОВЫЙ ИМПОРТ ДЛЯ ОБРАБОТКИ /start
 from aiohttp import web
 
 # Установим уровень логирования
 logging.basicConfig(level=logging.INFO)
 
 # --- 1. НАСТРОЙКИ ---
-# Получаем переменные окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CHAT_ID_RAW = os.getenv("ADMIN_CHAT_ID")
 WEBHOOK_HOST = os.getenv("WEBHOOK_URL")
 
-# Преобразуем ID админ-чата в целое число
 try:
     ADMIN_CHAT_ID = int(ADMIN_CHAT_ID_RAW)
 except (TypeError, ValueError):
     ADMIN_CHAT_ID = None
-    logging.error("ADMIN_CHAT_ID is missing or invalid.")
+    logging.error("ADMIN_CHAT_ID отсутствует или недействителен.")
 
-# Настройки Webhook
 WEBHOOK_PATH = '/'
 WEBAPP_HOST = '0.0.0.0'
 WEBAPP_PORT = int(os.getenv("PORT", 8080))
 
 # --- 2. ИНИЦИАЛИЗАЦИЯ ---
-# Диспетчер теперь инициализируется без бота, так как он передается позже
 storage = MemoryStorage() 
 dp = Dispatcher(storage=storage)
 
@@ -42,7 +39,8 @@ class ApplicationStates(StatesGroup):
 
 # --- 4. ОБРАБОТЧИКИ КОМАНД И СООБЩЕНИЙ ---
 
-@dp.message(F.text, commands=['start'])
+# ИСПРАВЛЕННЫЙ СИНТАКСИС: Используем Command("start") вместо commands=['start']
+@dp.message(Command("start")) 
 async def send_welcome(message: types.Message):
     """Обработка команды /start"""
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
@@ -61,35 +59,39 @@ async def start_application(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(ApplicationStates.waiting_for_minecraft_nick)
     await call.answer()
 
-@dp.message(ApplicationStates.waiting_for_minecraft_nick)
+# ИСПРАВЛЕННЫЙ СИНТАКСИС: FSM-обработчик
+@dp.message(ApplicationStates.waiting_for_minecraft_nick, F.text)
 async def process_mc_nick(message: types.Message, state: FSMContext):
     """Шаг 1: Получаем ник в Minecraft"""
     await state.update_data(mc_nick=message.text)
     await message.answer("Хорошо. **Ваш никнейм в Discord (включая тег)?**")
     await state.set_state(ApplicationStates.waiting_for_discord_nick)
 
-@dp.message(ApplicationStates.waiting_for_discord_nick)
+# ИСПРАВЛЕННЫЙ СИНТАКСИС: FSM-обработчик
+@dp.message(ApplicationStates.waiting_for_discord_nick, F.text)
 async def process_discord_nick(message: types.Message, state: FSMContext):
     """Шаг 2: Получаем ник в Discord"""
     await state.update_data(discord_nick=message.text)
     await message.answer("Почти готово. **Где Вы узнали о нашем сервере?**")
     await state.set_state(ApplicationStates.waiting_for_source)
 
-@dp.message(ApplicationStates.waiting_for_source)
+# ИСПРАВЛЕННЫЙ СИНТАКСИС: FSM-обработчик
+@dp.message(ApplicationStates.waiting_for_source, F.text)
 async def process_source(message: types.Message, state: FSMContext):
     """Шаг 3: Получаем источник"""
     await state.update_data(source=message.text)
     await message.answer("Последний вопрос: **Чем планируете заниматься на сервере?**")
     await state.set_state(ApplicationStates.waiting_for_activity)
 
-@dp.message(ApplicationStates.waiting_for_activity)
+# ИСПРАВЛЕННЫЙ СИНТАКСИС: FSM-обработчик
+@dp.message(ApplicationStates.waiting_for_activity, F.text)
 async def process_activity(message: types.Message, state: FSMContext):
     """Шаг 4: Получаем планы и отправляем заявку"""
     await state.update_data(activity=message.text)
     data = await state.get_data()
     
     await message.answer("Спасибо! Ваша заявка принята и отправлена на рассмотрение. Мы сообщим Вам о решении.")
-    await state.clear() # Используем clear() вместо finish() в aiogram 3.x
+    await state.clear()
     
     # --- ФОРМИРОВАНИЕ И ОТПРАВКА ЗАЯВКИ АДМИНАМ ---
     application_text = (
@@ -102,26 +104,23 @@ async def process_activity(message: types.Message, state: FSMContext):
         f"**Планы на сервере:** {data['activity']}\n"
     )
 
-    # Кнопки для модерации
     admin_keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton("✅ ОДОБРИТЬ", callback_data=f"approve_{message.from_user.id}"),
          types.InlineKeyboardButton("❌ ОТКЛОНИТЬ", callback_data=f"reject_{message.from_user.id}")]
     ])
     
     if ADMIN_CHAT_ID:
-        await message.bot.send_message( # Используем message.bot
+        await message.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=application_text,
             reply_markup=admin_keyboard,
             parse_mode='Markdown'
         )
 
-# Обработка нажатий кнопок модерации (для администраторов)
 @dp.callback_query(lambda c: c.data and (c.data.startswith('approve_') or c.data.startswith('reject_')))
 async def process_admin_decision(call: types.CallbackQuery):
     action, user_id = call.data.split('_')
     
-    # Отправляем сообщение пользователю
     if action == 'approve':
         await call.bot.send_message(user_id, "🥳 **Поздравляем! Ваша заявка одобрена!** Теперь вам доступно меню сервера. /start")
         await call.answer("Заявка одобрена.", show_alert=True)
@@ -129,7 +128,6 @@ async def process_admin_decision(call: types.CallbackQuery):
         await call.bot.send_message(user_id, "😔 **К сожалению, Ваша заявка отклонена.** Вы можете попробовать позже.")
         await call.answer("Заявка отклонена.", show_alert=True)
 
-    # Редактируем сообщение в админ-чате, чтобы показать, что оно обработано
     await call.message.edit_text(
         call.message.text + f"\n\n**СТАТУС:** {'✅ Одобрено' if action == 'approve' else '❌ Отклонено'} (Модератор: {call.from_user.full_name})", 
         reply_markup=None, 
@@ -152,14 +150,14 @@ async def on_shutdown(bot: Bot):
 async def handle_webhook(request):
     """Обработка входящих Webhook-запросов от Telegram"""
     
-    # 1. Получаем тело запроса
+    if request.match_info.get('token') != BOT_TOKEN:
+        # Эта проверка нужна в более сложном коде, но пока оставим
+        pass 
+        
     update_json = await request.json()
-    
-    # 2. Создаем объект Update и передаем его Диспетчеру
     update = Update.model_validate(update_json) 
-    await dp.feed_update(update) 
+    await dp.feed_update(update, bot=app['bot']) # <-- передаем бот в feed_update
     
-    # 3. Всегда возвращаем HTTP 200 OK
     return web.Response()
 
 
@@ -167,21 +165,22 @@ if __name__ == '__main__':
     if not all([BOT_TOKEN, ADMIN_CHAT_ID_RAW, WEBHOOK_HOST]):
         logging.error("ОШИБКА: Не все переменные окружения установлены! BOT_TOKEN, ADMIN_CHAT_ID и WEBHOOK_URL обязательны.")
     else:
-        # Инициализация бота здесь, чтобы он был доступен для AIOHTTP
         bot = Bot(token=BOT_TOKEN, parse_mode='HTML') 
-        dp.start_polling = lambda *args, **kwargs: logging.warning("Polling is not used with webhooks.")
-
+        
         # 1. Создаем AIOHTTP приложение
         app = web.Application()
         
-        # 2. Регистрируем обработчик для Webhook URL
+        # 2. Добавляем объект бота в приложение, чтобы он был доступен в handle_webhook
+        app['bot'] = bot
+
+        # 3. Регистрируем обработчик для Webhook URL
         app.router.add_post(WEBHOOK_PATH, handle_webhook)
 
-        # 3. Регистрируем функции запуска/остановки
-        app.on_startup.append(lambda app: on_startup(bot))
-        app.on_shutdown.append(lambda app: on_shutdown(bot))
+        # 4. Регистрируем функции запуска/остановки
+        app.on_startup.append(lambda app: on_startup(app['bot']))
+        app.on_shutdown.append(lambda app: on_shutdown(app['bot']))
 
-        # 4. Запускаем Web-сервер AIOHTTP
+        # 5. Запускаем Web-сервер AIOHTTP
         logging.info("Starting AIOHTTP web application...")
         web.run_app(
             app,
